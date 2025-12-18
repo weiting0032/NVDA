@@ -14,9 +14,8 @@ PORTFOLIO_SHEET_TITLE = 'Streamlit NVDA'
 st.set_page_config(page_title="NVDA 戰情中心 V6", layout="wide")
 st.title("🚀 NVDA 戰情室 V6 Google Sheets 版")
 
-# --- 1. 資料存取函數 (改為 Google Sheets) ---
+# --- 1. 資料存取函數 ---
 def get_gsheet_client():
-    # 需在 Streamlit Secrets 中設定 gcp_service_account
     credentials = st.secrets["gcp_service_account"]
     return gspread.service_account_from_dict(credentials)
 
@@ -28,13 +27,11 @@ def load_trades():
         if not data:
             return pd.DataFrame(columns=['Date', 'Type', 'Price', 'Shares', 'Total'])
         df = pd.DataFrame(data)
-        # 確保數值型態正確
         df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
         df['Shares'] = pd.to_numeric(df['Shares'], errors='coerce')
         df['Total'] = pd.to_numeric(df['Total'], errors='coerce')
         return df
-    except Exception as e:
-        # 若找不到檔案或表單為空，回傳空資料表
+    except Exception:
         return pd.DataFrame(columns=['Date', 'Type', 'Price', 'Shares', 'Total'])
 
 def save_trade(date_val, trans_type, price, shares):
@@ -42,7 +39,6 @@ def save_trade(date_val, trans_type, price, shares):
         gc = get_gsheet_client()
         sh = gc.open(PORTFOLIO_SHEET_TITLE).sheet1
         total_amt = price * shares
-        # 將日期轉為字串格式
         new_row = [str(date_val), trans_type, float(price), float(shares), float(total_amt)]
         sh.append_row(new_row)
         return True
@@ -50,12 +46,49 @@ def save_trade(date_val, trans_type, price, shares):
         st.error(f"儲存失敗: {e}")
         return False
 
+# --- 新增：快取股票數據函數，避免 YFRateLimitError ---
+@st.cache_data(ttl=3600)  # 快取 1 小時 (3600秒)
+def get_nvda_data(ticker_symbol):
+    stock = yf.Ticker(ticker_symbol)
+    # 使用 2y 資料以計算 SMA200
+    df = stock.history(period="2y", auto_adjust=False)
+    
+    if df.empty:
+        return None
+        
+    # --- 計算指標 (維持原邏輯) ---
+    df['SMA20'] = df['Close'].rolling(20).mean()
+    df['SMA60'] = df['Close'].rolling(60).mean()
+    df['SMA200'] = df['Close'].rolling(200).mean()
+
+    # Bollinger Bands
+    std = df['Close'].rolling(20).std()
+    df['BB_upper'] = df['SMA20'] + 2 * std
+    df['BB_lower'] = df['SMA20'] - 2 * std
+    df['BB_pos'] = (df['Close'] - df['BB_lower']) / (df['BB_upper'] - df['BB_lower']) * 100
+
+    # RSI
+    delta = df['Close'].diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = -delta.clip(upper=0).rolling(14).mean()
+    rs = gain / (loss + 1e-9)
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    # MACD
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['Hist'] = df['MACD'] - df['Signal']
+    
+    return df
+
 # --- 2. 側邊欄控制台 ---
 st.sidebar.header("🕹️ 控制台")
 if st.sidebar.button("🔄 刷新數據", type="primary"):
-    st.cache_data.clear()
+    st.cache_data.clear() # 強制清除快取重新抓取
     st.rerun()
-st.sidebar.caption(f"Update: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"最後更新: {datetime.now().strftime('%H:%M:%S')}")
 
 st.sidebar.header("💰 資金設定")
 initial_capital = st.sidebar.number_input("初始資金 (USD)", value=31925, step=100)
@@ -72,37 +105,14 @@ with st.sidebar.form("trade"):
             time.sleep(1)
             st.rerun()
 
-# --- 3. 核心指標運算 ---
-ticker = "NVDA"
-stock = yf.Ticker(ticker)
-hist = stock.history(period="2y", auto_adjust=False)
+# --- 3. 獲取數據 ---
+hist = get_nvda_data("NVDA")
 
-# --- SMA ---
-hist['SMA20'] = hist['Close'].rolling(20).mean()
-hist['SMA60'] = hist['Close'].rolling(60).mean()
-hist['SMA200'] = hist['Close'].rolling(200).mean()
+if hist is None or hist.empty:
+    st.error("無法取得 NVDA 數據，請稍後再試或檢查網路。")
+    st.stop()
 
-# --- Bollinger Bands ---
-std = hist['Close'].rolling(20).std()
-hist['BB_upper'] = hist['SMA20'] + 2 * std
-hist['BB_lower'] = hist['SMA20'] - 2 * std
-hist['BB_pos'] = (hist['Close'] - hist['BB_lower']) / (hist['BB_upper'] - hist['BB_lower']) * 100
-
-# --- RSI ---
-delta = hist['Close'].diff()
-gain = delta.clip(lower=0).rolling(14).mean()
-loss = -delta.clip(upper=0).rolling(14).mean()
-rs = gain / (loss + 1e-9)
-hist['RSI'] = 100 - (100 / (1 + rs))
-
-# --- MACD ---
-ema12 = hist['Close'].ewm(span=12, adjust=False).mean()
-ema26 = hist['Close'].ewm(span=26, adjust=False).mean()
-hist['MACD'] = ema12 - ema26
-hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
-hist['Hist'] = hist['MACD'] - hist['Signal']
-
-# --- 4. 資產計算 ---
+# --- 4. 資產計算 (維持原邏輯) ---
 trades = load_trades()
 total_shares = 0
 cash = initial_capital
@@ -118,7 +128,6 @@ for i, r in trades.iterrows():
         total_shares -= r['Shares']
         cash += amt
         if total_shares > 0:
-            # 維持原邏輯：按比例扣除成本
             invested_cost *= (1 - (r['Shares'] / (total_shares + r['Shares'])))
         else:
             invested_cost = 0
@@ -139,7 +148,6 @@ bb_pos = float(row['BB_pos'])
 hist_val = float(row['Hist'])
 prev_hist = float(hist['Hist'].iloc[-2])
 
-# 趨勢判斷
 bull_trend = price > sma200
 oversold_rsi = 40 if bull_trend else 30
 overbought_rsi = 78 if bull_trend else 70
@@ -152,21 +160,18 @@ macd_turn_up = hist_val > prev_hist
 macd_above_zero = float(row['MACD']) > 0
 strong_macd = macd_turn_up and macd_above_zero
 
-# 分數判斷
 score = 0
 score += 1 if is_oversold else 0
 score += 1 if is_near_lower else 0
 score += 1 if strong_macd else 0
 score += 1 if bull_trend else 0
 
-# --- 決策 ---
 action = "HOLD"
 shares_to_trade = 0
 position_ratio = mkt_val / initial_capital
 
 # 防守賣出
 trend_break = price < sma60 and sma20 < sma60
-# 多頭保護條件
 bull_protect = bull_trend and (price > sma60) 
 if total_shares > 0 and not bull_protect and (is_overbought or is_near_upper or trend_break):
     shares_to_trade = math.ceil(total_shares * 0.25)
@@ -217,8 +222,6 @@ fig.update_layout(height=800, xaxis_rangeslider_visible=False, showlegend=True)
 st.plotly_chart(fig, use_container_width=True)
 
 # --- 9. 交易紀錄 ---
-st.subheader("📋 交易紀錄 (來自 Google Sheets)")
+st.subheader("📋 交易紀錄 (Google Sheets)")
 if not trades.empty:
     st.dataframe(trades.sort_index(ascending=False), use_container_width=True)
-else:
-    st.info("目前尚無交易紀錄或正在讀取中...")
