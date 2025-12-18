@@ -214,13 +214,13 @@ st.metric("Action", action, f"{qty} 股")
 
 st.subheader("📌 策略判斷細節")
 
-st.json({
-    "多頭趨勢": bool(bull),
-    "RSI": round(last['RSI'], 1),
-    "BB 位置 (%)": round(last['BB_pos'], 1),
-    "MACD 翻多": bool(macd_up),
-    "Score": round(score, 2)
-})
+d1, d2, d3, d4, d5 = st.columns(5)
+
+d1.metric("趨勢", "多頭" if bull else "空頭")
+d2.metric("RSI", f"{last['RSI']:.1f}")
+d3.metric("BB 位置", f"{last['BB_pos']:.1f}% (0 以下 = 跌破下軌，100 以上 = 突破上軌)")
+d4.metric("MACD", "翻多" if macd_up else "未翻多")
+d5.metric("Score", f"{score:.2f}")
 
 # ===============================
 # 7. 技術分析圖表（完整保留）
