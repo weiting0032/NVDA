@@ -6,3 +6,5 @@ plotly
 requests
 numpy
 lxml
+streamlit-autorefresh
+
