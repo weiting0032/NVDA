@@ -14,7 +14,7 @@ from streamlit_autorefresh import st_autorefresh
 PORTFOLIO_SHEET_TITLE = 'Streamlit NVDA'
 st.set_page_config(page_title="NVDA 戰情中心 V6", layout="wide")
 
-# 每 5 秒觸發一次輕量級刷新 (配合 Fragment 使用)
+# 每 5 秒觸發一次刷新 (驅動 Fragment 報價)
 st_autorefresh(interval=5000, limit=None, key="nvda_heartbeat")
 
 st.title("🚀 NVDA 戰情室 V6 (Real-time Optimized)")
@@ -24,6 +24,8 @@ def get_gsheet_client():
     credentials = st.secrets["gcp_service_account"]
     return gspread.service_account_from_dict(credentials)
 
+# --- 修正點 1：加上 30 分鐘緩存 (1800秒) 並加強型別轉換安全性 ---
+@st.cache_data(ttl=1800) 
 def load_trades():
     try:
         gc = get_gsheet_client()
@@ -31,12 +33,16 @@ def load_trades():
         data = sh.get_all_records()
         if not data:
             return pd.DataFrame(columns=['Date', 'Type', 'Price', 'Shares', 'Total'])
+        
         df = pd.DataFrame(data)
-        df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
-        df['Shares'] = pd.to_numeric(df['Shares'], errors='coerce')
-        df['Total'] = pd.to_numeric(df['Total'], errors='coerce')
+        # 強制清理欄位，避免空格或非數字導致庫存歸零
+        df['Price'] = pd.to_numeric(df['Price'], errors='coerce').fillna(0)
+        df['Shares'] = pd.to_numeric(df['Shares'], errors='coerce').fillna(0)
+        df['Total'] = pd.to_numeric(df['Total'], errors='coerce').fillna(0)
         return df
-    except Exception:
+    except Exception as e:
+        # 若讀取失敗，回傳空表前發出警告
+        st.error(f"Google Sheets 讀取失敗: {e}")
         return pd.DataFrame(columns=['Date', 'Type', 'Price', 'Shares', 'Total'])
 
 def save_trade(date_val, trans_type, price, shares):
@@ -53,13 +59,13 @@ def save_trade(date_val, trans_type, price, shares):
 
 # --- 2. 數據獲取與快取邏輯 ---
 
-@st.cache_data(ttl=300) # 歷史指標每 5 分鐘更新一次即可
+@st.cache_data(ttl=600) # 歷史指標改為 10 分鐘更新一次，節省效能
 def get_nvda_analysis(ticker_symbol):
     stock = yf.Ticker(ticker_symbol)
     df = stock.history(period="2y", auto_adjust=False)
     if df.empty: return None
     
-    # 均線
+    # 均線計算
     df['SMA20'] = df['Close'].rolling(20).mean()
     df['SMA60'] = df['Close'].rolling(60).mean()
     df['SMA200'] = df['Close'].rolling(200).mean()
@@ -100,8 +106,8 @@ def get_realtime_data(ticker_symbol):
 
 # --- 3. 側邊欄控制台 ---
 st.sidebar.header("🕹️ 控制台")
-if st.sidebar.button("🔄 強制重整數據", type="primary"):
-    st.cache_data.clear()
+if st.sidebar.button("🔄 強制重整全部數據", type="primary"):
+    st.cache_data.clear() # 清除包含交易紀錄在內的所有緩存
     st.rerun()
 
 initial_capital = st.sidebar.number_input("初始資金 (USD)", value=31925, step=100)
@@ -115,7 +121,7 @@ with st.sidebar.form("trade"):
     if st.form_submit_button("送出"):
         if save_trade(d, t, p, s):
             st.sidebar.success("已同步至 Google Sheets")
-            st.cache_data.clear()
+            st.cache_data.clear() # 存入後清除緩存，確保下次顯示最新數據
             time.sleep(1)
             st.rerun()
 
@@ -135,7 +141,7 @@ def show_realtime_header():
                 <h2 style="color: white; margin:0;">NVDA 即時報價: <span style="color: {price_color};">
                     ${curr_p:.2f} ({'+' if curr_c >=0 else ''}{curr_c:.2f} / {'+' if curr_c >=0 else ''}{curr_pct:.2f}%)
                 </span></h2>
-                <p style="color: gray; margin:0;">最後同步時間 (台北): {tw_now} | 每 5 秒偵測一次</p>
+                <p style="color: gray; margin:0;">最後同步時間 (台北): {tw_now} | 每 5 秒自動偵測</p>
             </div>
         """, unsafe_allow_html=True)
         return curr_p
@@ -143,7 +149,7 @@ def show_realtime_header():
 
 current_price = show_realtime_header()
 
-# --- 6. 資產概況計算 ---
+# --- 6. 資產概況計算 (將根據 load_trades 的緩存結果進行計算) ---
 trades = load_trades()
 total_shares = 0
 cash = initial_capital
@@ -189,7 +195,7 @@ if hist_data is not None:
     hist_val = float(last_row['Hist'])
     macd_val = float(last_row['MACD'])
 
-    # 趨勢與條件
+    # 趨勢與條件判斷
     bull_trend = current_price > sma200
     oversold_rsi = 40 if bull_trend else 30
     overbought_rsi = 78 if bull_trend else 70
@@ -199,28 +205,25 @@ if hist_data is not None:
     is_near_lower = bb_pos < 15
     is_near_upper = bb_pos > 85
     macd_turn_up = hist_val > prev_hist
-    macd_above_zero = macd_val > 0
-    strong_macd = macd_turn_up and macd_above_zero
+    strong_macd = macd_turn_up and (macd_val > 0)
 
-    # 分數判斷 (與 V6 同步)
+    # 分數判斷
     score = 0
     score += 1 if is_oversold else 0
     score += 1 if is_near_lower else 0
     score += 1 if strong_macd else 0
     score += 1 if bull_trend else 0
 
-    # 決策
+    # 決策邏輯
     action = "HOLD"
     shares_to_trade = 0
     position_ratio = mkt_val / initial_capital
     trend_break = current_price < sma60 and sma20 < sma60
     bull_protect = bull_trend and (current_price > sma60)
 
-    # 賣出邏輯
     if total_shares > 0 and not bull_protect and (is_overbought or is_near_upper or trend_break):
         shares_to_trade = math.ceil(total_shares * 0.25)
         action = "SELL"
-    # 買入邏輯
     elif cash > 0 and position_ratio < 0.6:
         distance = abs(current_price - sma200)/sma200
         risk_factor = max(0.2, 1 - distance)
@@ -240,29 +243,22 @@ if hist_data is not None:
 
 # --- 8. 技術分析圖表 ---
 st.divider()
-st.subheader("📈 技術分析圖表 (趨勢觀測區)")
+st.subheader("📈 技術分析圖表")
 if hist_data is not None:
     chart_df = hist_data.tail(126)
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6,0.2,0.2], subplot_titles=("Price & MA","RSI","MACD"))
-    
     fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name='NVDA'), row=1, col=1)
-    
     for ma, color in zip(['SMA20','SMA60','SMA200'], ['#FFA500','#00CED1','#9400D3']):
         fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[ma], line=dict(color=color, width=1.5), name=ma), row=1, col=1)
-    
     fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['RSI'], line=dict(color='#9370DB', width=2), name='RSI'), row=2, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    
     m_colors = ['#2E8B57' if v >= 0 else '#CD5C5C' for v in chart_df['Hist']]
     fig.add_trace(go.Bar(x=chart_df.index, y=chart_df['Hist'], marker_color=m_colors, name='MACD柱'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['MACD'], line=dict(color='#FF8C00', width=1), name='DIF'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Signal'], line=dict(color='#1E90FF', width=1), name='DEA'), row=3, col=1)
-    
-    fig.update_layout(height=700, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(t=50, b=50))
+    fig.update_layout(height=700, xaxis_rangeslider_visible=False, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 9. 交易紀錄 ---
-with st.expander("📋 查看歷史交易紀錄 (Google Sheets)"):
+with st.expander("📋 查看歷史交易紀錄 (緩存每 30 分鐘更新)"):
     if not trades.empty:
         st.dataframe(trades.sort_index(ascending=False), use_container_width=True)
