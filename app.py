@@ -218,7 +218,7 @@ d1, d2, d3, d4, d5 = st.columns(5)
 
 d1.metric("趨勢", "多頭" if bull else "空頭")
 d2.metric("RSI", f"{last['RSI']:.1f}")
-d3.metric("BB 位置", f"{last['BB_pos']:.1f}% (0 以下 = 跌破下軌，100 以上 = 突破上軌)")
+d3.metric("BB 位置 (0 以下 = 跌破下軌，100 以上 = 突破上軌)", f"{last['BB_pos']:.1f}%")
 d4.metric("MACD", "翻多" if macd_up else "未翻多")
 d5.metric("Score", f"{score:.2f}")
 
