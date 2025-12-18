@@ -14,10 +14,10 @@ from streamlit_autorefresh import st_autorefresh
 PORTFOLIO_SHEET_TITLE = 'Streamlit NVDA' 
 st.set_page_config(page_title="NVDA 戰情中心 V6", layout="wide")
 
-# 每 2 秒自動刷新頁面 (驅動即時數據跳動)
-st_autorefresh(interval=2000, limit=None, key="nvda_realtime_refresh")
+# 每 2 秒觸發一次腳本運行 (驅動即時數據)
+st_autorefresh(interval=2000, limit=None, key="nvda_auto_refresh")
 
-st.title("🚀 NVDA 戰情室 V6 (Real-time)")
+st.title("🚀 NVDA 戰情室 V6 (Smooth Update)")
 
 # --- 1. 資料存取函數 ---
 def get_gsheet_client():
@@ -53,32 +53,28 @@ def save_trade(date_val, trans_type, price, shares):
 
 # --- 2. 數據獲取與快取邏輯 ---
 
-# 歷史數據與圖表指標運算：快取 1 小時，避免圖表每 2 秒重繪
+# 歷史數據與圖表運算：快取 1 小時，避免圖表每 2 秒重畫導致閃爍
 @st.cache_data(ttl=3600)
 def get_nvda_analysis(ticker_symbol):
     stock = yf.Ticker(ticker_symbol)
     df = stock.history(period="2y", auto_adjust=False)
     if df.empty: return None
     
-    # 計算均線
     df['SMA20'] = df['Close'].rolling(20).mean()
     df['SMA60'] = df['Close'].rolling(60).mean()
     df['SMA200'] = df['Close'].rolling(200).mean()
     
-    # 布林通道
     std = df['Close'].rolling(20).std()
     df['BB_upper'] = df['SMA20'] + 2 * std
     df['BB_lower'] = df['SMA20'] - 2 * std
     df['BB_pos'] = (df['Close'] - df['BB_lower']) / (df['BB_upper'] - df['BB_lower'] + 1e-9) * 100
     
-    # RSI
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = -delta.clip(upper=0).rolling(14).mean()
     rs = gain / (loss + 1e-9)
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # MACD
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = ema12 - ema26
@@ -86,7 +82,7 @@ def get_nvda_analysis(ticker_symbol):
     df['Hist'] = df['MACD'] - df['Signal']
     return df
 
-# 即時數據獲取：加入 None 檢查防止 TypeError
+# 即時數據：修復 TypeError 並優化連線
 def get_realtime_data(ticker_symbol):
     try:
         ticker = yf.Ticker(ticker_symbol)
@@ -101,9 +97,15 @@ def get_realtime_data(ticker_symbol):
     except:
         return None, 0, 0
 
-# --- 3. 側邊欄控制台 ---
+# --- 3. 畫面佈局預留容器 (關鍵：防止閃爍) ---
+# 先定義好容器位置，更新時內容會直接替換而不會讓頁面上下跳動
+realtime_container = st.empty()
+metric_container = st.empty()
+strategy_container = st.empty()
+
+# --- 4. 側邊欄控制台 ---
 st.sidebar.header("🕹️ 控制台")
-if st.sidebar.button("🔄 刷新全部數據", type="primary"):
+if st.sidebar.button("🔄 刷新全部圖表", type="primary"):
     st.cache_data.clear()
     st.rerun()
 
@@ -122,30 +124,30 @@ with st.sidebar.form("trade"):
             time.sleep(1)
             st.rerun()
 
-# --- 4. 數據加載 ---
+# --- 5. 數據處理 ---
 hist_data = get_nvda_analysis("NVDA")
 curr_p, curr_c, curr_pct = get_realtime_data("NVDA")
-
-# 台灣時間同步 (UTC+8)
 tw_now = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 
-# --- 5. 即時報價看板渲染 ---
-if curr_p is not None:
-    price_color = '#00ff00' if curr_c >= 0 else '#ff0000'
-    st.markdown(f"""
-        <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 5px solid {price_color};">
-            <h2 style="color: white; margin:0;">NVDA 即時報價: <span style="color: {price_color};">
-                ${curr_p:.2f} ({'+' if curr_c >=0 else ''}{curr_c:.2f} / {'+' if curr_c >=0 else ''}{curr_pct:.2f}%)
-            </span></h2>
-            <p style="color: gray; margin:0;">最後同步時間 (台北): {tw_now}</p>
-        </div>
-    """, unsafe_allow_html=True)
-else:
-    st.error("⚠️ 無法獲取即時股價，請檢查 API 狀態。")
-    # 若獲取失敗，降級使用歷史最後一筆價格
-    curr_p = hist_data['Close'].iloc[-1] if hist_data is not None else 0
+# 如果即時抓取失敗，顯示最後收盤價
+display_price = curr_p if curr_p is not None else (hist_data['Close'].iloc[-1] if hist_data is not None else 0)
 
-# --- 6. 資產概況計算 ---
+# --- 6. 渲染即時報價看板 (填入容器) ---
+with realtime_container.container():
+    if curr_p is not None:
+        price_color = '#00ff00' if curr_c >= 0 else '#ff0000'
+        st.markdown(f"""
+            <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 5px solid {price_color};">
+                <h2 style="color: white; margin:0;">NVDA 即時報價: <span style="color: {price_color};">
+                    ${curr_p:.2f} ({'+' if curr_c >=0 else ''}{curr_c:.2f} / {'+' if curr_c >=0 else ''}{curr_pct:.2f}%)
+                </span></h2>
+                <p style="color: gray; margin:0;">最後同步時間 (台北): {tw_now}</p>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.error("⚠️ 即時報價連線中或暫時不可用")
+
+# --- 7. 資產概況計算與渲染 ---
 trades = load_trades()
 total_shares = 0
 cash = initial_capital
@@ -165,90 +167,75 @@ for _, r in trades.iterrows():
         else:
             invested_cost = 0
 
-mkt_val = total_shares * curr_p
+mkt_val = total_shares * display_price
 avg_cost = (invested_cost / total_shares) if total_shares > 0 else 0
 pl_val = (cash + mkt_val) - initial_capital
 pl_pct = (pl_val / initial_capital) * 100
 
+with metric_container.container():
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("持倉市值", f"${mkt_val:.2f}", f"{total_shares:.0f}股")
+    c2.metric("手中現金", f"${cash:.2f}")
+    c3.metric("總損益", f"${pl_val:.2f}", f"{pl_pct:.2f}%")
+    c4.metric("平均成本", f"${avg_cost:.2f}", f"現價 ${display_price:.2f}")
+
+# --- 8. 策略核心邏輯 (維持原邏輯) ---
+with strategy_container.container():
+    if hist_data is not None:
+        last_row = hist_data.iloc[-1]
+        prev_hist = hist_data['Hist'].iloc[-2]
+        
+        sma200, sma60, sma20 = last_row['SMA200'], last_row['SMA60'], last_row['SMA20']
+        rsi, bb_pos, macd_hist = last_row['RSI'], last_row['BB_pos'], last_row['Hist']
+        
+        bull_trend = display_price > sma200
+        is_oversold = rsi < (40 if bull_trend else 30)
+        is_overbought = rsi > (78 if bull_trend else 70)
+        is_near_lower = bb_pos < 15
+        is_near_upper = bb_pos > 85
+        macd_turn_up = macd_hist > prev_hist and last_row['MACD'] > 0
+        
+        score = sum([is_oversold, is_near_lower, macd_turn_up, bull_trend])
+        
+        action = "HOLD"; shares_to_trade = 0
+        pos_ratio = mkt_val / initial_capital
+        trend_break = display_price < sma60 and sma20 < sma60
+        bull_protect = bull_trend and (display_price > sma60)
+        
+        if total_shares > 0 and not bull_protect and (is_overbought or is_near_upper or trend_break):
+            shares_to_trade = math.ceil(total_shares * 0.25)
+            action = "SELL"
+        elif cash > 0 and pos_ratio < 0.6:
+            risk_f = max(0.2, 1 - abs(display_price - sma200)/sma200)
+            if score >= 3:
+                shares_to_trade = math.floor((cash * 0.4 * risk_f) / display_price)
+                action = "STRONG_BUY"
+            elif score == 2 and pos_ratio < 0.3:
+                shares_to_trade = math.floor((cash * 0.2 * risk_f) / display_price)
+                action = "BUY"
+
+        st.subheader("🧠 策略訊號")
+        sc1, sc2 = st.columns([1, 3])
+        sc1.metric("策略建議", action, f"{shares_to_trade} 股")
+        sc2.write(f"📊 **指標現況**：RSI: `{rsi:.1f}` | BB位置: `{bb_pos:.1f}%` | 趨勢: `{'多頭' if bull_trend else '空頭'}` | MACD柱: `{macd_hist:.2f}`")
+
+# --- 9. 技術圖表 (因為有 @st.cache_data，不會每 2 秒重畫) ---
 st.divider()
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("持倉市值", f"${mkt_val:.2f}", f"{total_shares:.0f}股")
-c2.metric("手中現金", f"${cash:.2f}")
-c3.metric("總損益", f"${pl_val:.2f}", f"{pl_pct:.2f}%")
-c4.metric("平均成本", f"${avg_cost:.2f}", f"現價 ${curr_p:.2f}")
-
-# --- 7. 策略核心邏輯 (維持原代碼邏輯) ---
-if hist_data is not None:
-    last_row = hist_data.iloc[-1]
-    prev_hist = hist_data['Hist'].iloc[-2]
-    
-    # 提取指標 (決策基於最近一筆歷史指標與當前即時價格)
-    sma200, sma60, sma20 = last_row['SMA200'], last_row['SMA60'], last_row['SMA20']
-    rsi, bb_pos, macd_hist = last_row['RSI'], last_row['BB_pos'], last_row['Hist']
-    
-    # 趨勢與條件判斷
-    bull_trend = curr_p > sma200
-    is_oversold = rsi < (40 if bull_trend else 30)
-    is_overbought = rsi > (78 if bull_trend else 70)
-    is_near_lower = bb_pos < 15
-    is_near_upper = bb_pos > 85
-    macd_turn_up = macd_hist > prev_hist and last_row['MACD'] > 0
-    
-    # 分數累計
-    score = sum([is_oversold, is_near_lower, macd_turn_up, bull_trend])
-    
-    # 決策邏輯
-    action = "HOLD"; shares_to_trade = 0
-    pos_ratio = mkt_val / initial_capital
-    trend_break = curr_p < sma60 and sma20 < sma60
-    bull_protect = bull_trend and (curr_p > sma60)
-    
-    if total_shares > 0 and not bull_protect and (is_overbought or is_near_upper or trend_break):
-        shares_to_trade = math.ceil(total_shares * 0.25)
-        action = "SELL"
-    elif cash > 0 and pos_ratio < 0.6:
-        risk_f = max(0.2, 1 - abs(curr_p - sma200)/sma200)
-        if score >= 3:
-            shares_to_trade = math.floor((cash * 0.4 * risk_f) / curr_p)
-            action = "STRONG_BUY"
-        elif score == 2 and pos_ratio < 0.3:
-            shares_to_trade = math.floor((cash * 0.2 * risk_f) / curr_p)
-            action = "BUY"
-
-    st.subheader("🧠 策略訊號")
-    sc1, sc2 = st.columns([1, 3])
-    sc1.metric("策略建議", action, f"{shares_to_trade} 股")
-    sc2.write(f"📊 **指標現況**：RSI: `{rsi:.1f}` | BB位置: `{bb_pos:.1f}%` | 趨勢: `{'多頭' if bull_trend else '空頭'}` | MACD柱: `{macd_hist:.2f}`")
-
-# --- 8. 技術分析圖表 (被快取保護，不隨即時刷新重新計算) ---
-st.divider()
-st.subheader("📈 技術分析圖表 (靜態分析區)")
+st.subheader("📈 技術分析 (靜態歷史圖表)")
 if hist_data is not None:
     chart_df = hist_data.tail(126)
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6,0.2,0.2], subplot_titles=("Price & MA","RSI","MACD"))
-    
-    # K線
     fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name='NVDA'), row=1, col=1)
-    
-    # 均線
     for ma, color in zip(['SMA20','SMA60','SMA200'], ['#FFA500','#00CED1','#9400D3']):
         fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[ma], line=dict(color=color, width=1.5), name=ma), row=1, col=1)
-    
-    # RSI
     fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['RSI'], line=dict(color='#9370DB', width=2), name='RSI'), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    
-    # MACD
     m_colors = ['#2E8B57' if v >= 0 else '#CD5C5C' for v in chart_df['Hist']]
     fig.add_trace(go.Bar(x=chart_df.index, y=chart_df['Hist'], marker_color=m_colors, name='MACD柱'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['MACD'], line=dict(color='#FF8C00', width=1), name='DIF'), row=3, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Signal'], line=dict(color='#1E90FF', width=1), name='DEA'), row=3, col=1)
-    
-    fig.update_layout(height=700, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(t=50, b=50))
+    fig.update_layout(height=700, xaxis_rangeslider_visible=False, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 9. 交易紀錄 ---
-with st.expander("📋 查看歷史交易紀錄 (Google Sheets)"):
+# --- 10. 交易紀錄 ---
+with st.expander("📋 查看歷史交易紀錄"):
     if not trades.empty:
         st.dataframe(trades.sort_index(ascending=False), use_container_width=True)
