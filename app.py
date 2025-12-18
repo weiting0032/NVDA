@@ -23,7 +23,7 @@ st.title("🚀 NVDA 戰情室 V6.5（即時＋風控強化）")
 def get_gsheet_client():
     return gspread.service_account_from_dict(st.secrets["gcp_service_account"])
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=7200)
 def load_trades():
     try:
         sh = get_gsheet_client().open(PORTFOLIO_SHEET_TITLE).sheet1
