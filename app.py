@@ -212,14 +212,15 @@ elif realtime_ok:
 st.subheader("🧠 策略建議")
 st.metric("Action", action, f"{qty} 股")
 
-with st.expander("策略判斷細節"):
-    st.json({
-        "多頭趨勢": bull,
-        "RSI": round(last['RSI'],1),
-        "BB位置": round(last['BB_pos'],1),
-        "MACD翻多": macd_up,
-        "Score": score
-    })
+st.subheader("📌 策略判斷細節")
+
+st.json({
+    "多頭趨勢": bool(bull),
+    "RSI": round(last['RSI'], 1),
+    "BB 位置 (%)": round(last['BB_pos'], 1),
+    "MACD 翻多": bool(macd_up),
+    "Score": round(score, 2)
+})
 
 # ===============================
 # 7. 技術分析圖表（完整保留）
