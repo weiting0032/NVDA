@@ -14,8 +14,8 @@ from streamlit_autorefresh import st_autorefresh
 PORTFOLIO_SHEET_TITLE = 'Streamlit NVDA'
 st.set_page_config(page_title="NVDA 戰情中心 V6", layout="wide")
 
-# 每 2 秒觸發一次輕量級刷新 (配合 Fragment 使用)
-st_autorefresh(interval=2000, limit=None, key="nvda_heartbeat")
+# 每 5 秒觸發一次輕量級刷新 (配合 Fragment 使用)
+st_autorefresh(interval=5000, limit=None, key="nvda_heartbeat")
 
 st.title("🚀 NVDA 戰情室 V6 (Real-time Optimized)")
 
@@ -135,7 +135,7 @@ def show_realtime_header():
                 <h2 style="color: white; margin:0;">NVDA 即時報價: <span style="color: {price_color};">
                     ${curr_p:.2f} ({'+' if curr_c >=0 else ''}{curr_c:.2f} / {'+' if curr_c >=0 else ''}{curr_pct:.2f}%)
                 </span></h2>
-                <p style="color: gray; margin:0;">最後同步時間 (台北): {tw_now} | 每 2 秒偵測一次</p>
+                <p style="color: gray; margin:0;">最後同步時間 (台北): {tw_now} | 每 5 秒偵測一次</p>
             </div>
         """, unsafe_allow_html=True)
         return curr_p
