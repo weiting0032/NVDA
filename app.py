@@ -108,7 +108,7 @@ with st.sidebar.form("trade"):
             st.rerun()
 
 # ===============================
-# 4. 即時報價 Header（保留）
+# 4. 即時報價 Header
 # ===============================
 hist = get_nvda_analysis("NVDA")
 
@@ -166,7 +166,7 @@ c3.metric("總損益", f"${pl_val:,.0f}", f"{pl_pct:.2f}%")
 c4.metric("平均成本", f"${(cost/shares if shares>0 else 0):.2f}")
 
 # ===============================
-# 6. 策略核心（強化）
+# 6. 策略核心（加入 block_reasons）
 # ===============================
 last = hist.iloc[-1]
 prev_hist = hist['Hist'].iloc[-2]
@@ -190,6 +190,7 @@ score = (
 
 action, qty = "HOLD", 0
 position_ratio = mkt_val / initial_capital
+block_reasons = []
 
 if pl_pct < -15:
     action = "RISK_OFF"
@@ -208,12 +209,26 @@ elif realtime_ok:
         elif score >= 2.5 and position_ratio < 0.3:
             action = "BUY"
             qty = math.floor((cash * 0.2 * risk) / current_price)
+        else:
+            if score < 2.5:
+                block_reasons.append("策略分數未達買進門檻（Score < 2.5）")
+            if position_ratio >= 0.3:
+                block_reasons.append("目前持股比例已超過 30%，風控限制禁止加碼")
+            if not macd_up:
+                block_reasons.append("MACD 尚未翻多，動能尚未確認")
 
+# ===============================
+# 6-1. 策略顯示
+# ===============================
 st.subheader("🧠 策略建議")
 st.metric("Action", action, f"{qty} 股")
 
-st.subheader("📌 策略判斷細節")
+if action == "HOLD" and block_reasons:
+    st.warning("⚠️ 本次未進場原因：")
+    for r in block_reasons:
+        st.write(f"• {r}")
 
+st.subheader("📌 策略判斷細節")
 d1, d2, d3, d4, d5 = st.columns(5)
 
 d1.metric("趨勢", "多頭" if bull else "空頭")
@@ -223,7 +238,7 @@ d4.metric("MACD", "翻多" if macd_up else "未翻多")
 d5.metric("Score", f"{score:.2f}")
 
 # ===============================
-# 7. 技術分析圖表（完整保留）
+# 7. 技術分析圖表
 # ===============================
 st.subheader("📈 技術分析")
 df = hist.tail(126)
@@ -237,7 +252,7 @@ fig.add_trace(go.Candlestick(
     x=df.index, open=df['Open'], high=df['High'],
     low=df['Low'], close=df['Close'], name="NVDA"), 1,1)
 
-for ma, c in zip(['SMA20','SMA60','SMA200'], ['orange','cyan','violet']):
+for ma in ['SMA20','SMA60','SMA200']:
     fig.add_trace(go.Scatter(x=df.index, y=df[ma], name=ma), 1,1)
 
 fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI"), 2,1)
